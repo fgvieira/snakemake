@@ -1,6 +1,13 @@
 # Changelog
 
 
+## [8.14.1](https://github.com/fgvieira/snakemake/compare/v8.14.0...v8.14.1) (2024-06-16)
+
+
+### Bug Fixes
+
+* improve error message in case of invalid default storage prefix ([3c1065c](https://github.com/fgvieira/snakemake/commit/3c1065c9b441928f2d390b568a7e9f854256ad41))
+
 ## [8.14.0](https://github.com/snakemake/snakemake/compare/v8.13.0...v8.14.0) (2024-06-11)
 
 
