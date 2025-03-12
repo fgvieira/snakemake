@@ -22,6 +22,9 @@ from functools import partial
 from itertools import chain, filterfalse, groupby
 from operator import attrgetter
 from pathlib import Path
+
+# import pickle #TODO!!!
+import dill as pickle
 from snakemake.settings.types import DeploymentMethod
 
 from snakemake_interface_executor_plugins.dag import DAGExecutorInterface
@@ -193,34 +196,117 @@ class DAG(DAGExecutorInterface, DAGReportInterface):
 
     async def init(self, progress=False):
         """Initialise the DAG."""
-        for job in [await self.rule2job(rule) for rule in self.targetrules]:
-            job = await self.update([job], progress=progress, create_inventory=True)
-            self.targetjobs.add(job)
+        logger.debug("Calculating DAG hash")
+        import json
 
-        for file in self.targetfiles:
-            job = await self.update(
-                await self.file2jobs(file),
-                file=file,
-                progress=progress,
-                create_inventory=True,
-            )
-            self.targetjobs.add(job)
+        h = hashlib.sha256()
+        for target in self.targetrules:
+            h.update(target.name.encode())
+        for target in self.targetfiles:
+            h.update(target.encode())
+        for target in self.workflow.dag_settings.target_jobs:
+            h.update(target.rulename.encode())
+            h.update(json.dumps(target.wildcards_dict, sort_keys=True).encode())
+        dag_cache_path = self.workflow.persistence.dag_cache_path / h.hexdigest()
 
-        for spec in self.workflow.dag_settings.target_jobs:
-            job = await self.update(
-                [
-                    await self.new_job(
-                        self.workflow.get_rule(spec.rulename),
-                        wildcards_dict=spec.wildcards_dict,
-                    )
-                ],
-                progress=progress,
-                create_inventory=True,
-            )
-            self.targetjobs.add(job)
-            self.forcefiles.update(job.output)
+        if dag_cache_path.exists():
+            logger.debug(f"Loading DAG from cache from {dag_cache_path}")
+            with open(dag_cache_path, "rb") as dag_cache_fh:
+                def deserialize(obj):
+                    obj = json.loads(obj)
+                    logger.debug(obj)
+                    _obj = defaultdict(lambda: defaultdict(set))
+                    for job1 in obj:
+                        for job2 in obj[job1]:
+                            _job1 = json.loads(job1)
+                            logger.debug(_job1[0][0])
+                            logger.debug(_job1[0][1])
+                            _job1 = self.job_factory.new(
+                                _job1[0][0],
+                                self,
+                                wildcards_dict=_job1[0][1],
+                            )
+                            logger.debug(_job1)
+                            _job2 = json.loads(job2)
+                            logger.debug(_job2[0][0])
+                            logger.debug(_job2[0][1])
+                            _job2 = self.job_factory.new(
+                                _job2[0][0],
+                                self,
+                                wildcards_dict=_job2[0][1],
+                            )
+                            logger.debug(_job2)
+                            _obj[_job1][_job2] = set(obj[job1][job2])
+                    return _obj
 
-        self.cleanup()
+                dag_cache = pickle.load(dag_cache_fh)
+                self._dependencies = deserialize(dag_cache["dependencies"])
+                self.depending = deserialize(dag_cache["depending"])
+                self.job_cache = dag_cache["job_cache"]
+        else:
+            for job in [await self.rule2job(rule) for rule in self.targetrules]:
+                job = await self.update([job], progress=progress, create_inventory=True)
+                self.targetjobs.add(job)
+
+            for file in self.targetfiles:
+                job = await self.update(
+                    await self.file2jobs(file),
+                    file=file,
+                    progress=progress,
+                    create_inventory=True,
+                )
+                self.targetjobs.add(job)
+
+            for spec in self.workflow.dag_settings.target_jobs:
+                job = await self.update(
+                    [
+                        await self.new_job(
+                            self.workflow.get_rule(spec.rulename),
+                            wildcards_dict=spec.wildcards_dict,
+                        )
+                    ],
+                    progress=progress,
+                    create_inventory=True,
+                )
+                self.targetjobs.add(job)
+                self.forcefiles.update(job.output)
+
+            self.cleanup()
+
+            logger.debug(f"Saving DAG to cache file {dag_cache_path}")
+
+            def serialize(obj):
+                _obj = defaultdict(lambda: defaultdict(set))
+                for job1 in obj:
+                    for job2 in self._dependencies[job1]:
+                        _obj[json.dumps(job1.get_target_spec())][
+                            json.dumps(job2.get_target_spec())
+                        ] = list(self._dependencies[job1][job2])
+                return _obj
+
+            class ComplexEncoder(json.JSONEncoder):
+                def default(self, obj):
+                    if isinstance(obj, dict) or isinstance(obj, defaultdict):
+                        return [
+                            {json.dumps(k.get_target_spec()): v}
+                            for k, v in obj.iteritems()
+                        ]
+                    return json.JSONEncoder.default(self, obj)
+
+            #logger.debug(json.dumps(self._dependencies, cls=ComplexEncoder))
+
+            dag_cache = {
+                "dependencies": json.dumps(
+                    serialize(self._dependencies), sort_keys=True
+                ).encode(),
+                "depending": json.dumps(
+                    serialize(self.depending), sort_keys=True
+                ).encode(),
+                "job_cache": self.job_cache,
+            }
+
+            with open(dag_cache_path, "wb") as dag_cache_fh:
+                pickle.dump(dag_cache, dag_cache_fh, protocol=pickle.HIGHEST_PROTOCOL)
 
         await self.check_incomplete()
 

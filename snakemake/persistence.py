@@ -58,7 +58,7 @@ class Persistence(PersistenceExecutorInterface):
         self._max_len = None
 
         if path is None:
-            self._path = Path(os.path.abspath(".snakemake"))
+            self._path = Path(".snakemake").absolute()
         else:
             self._path = path
         os.makedirs(self.path, exist_ok=True)
@@ -76,7 +76,9 @@ class Persistence(PersistenceExecutorInterface):
         self.benchmark_path = os.path.join(self.path, "benchmarks")
 
         self.source_cache = os.path.join(self.path, "source_cache")
-
+        self.dag_cache_path = self.path / "dag_cache"
+        self.dag_cache_path.mkdir(parents=True, exist_ok=True)
+        
         if conda_prefix is None:
             self.conda_env_path = os.path.join(self.path, "conda")
         else:
